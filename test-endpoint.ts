@@ -1,12 +1,12 @@
 /**
- * Test script for the x402-protected endpoint with allowlist gate.
- * Allowlisted wallets get free access. Non-allowlisted wallets must pay.
+ * Test script for the x402-protected endpoint with token balance gate.
+ * Wallets with >= 0.0001 ETH on Base Sepolia get free access. Others must pay.
  */
 import { config } from "dotenv";
 config({ path: ".env.local" });
 
 import { createPublicClient, http } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
@@ -18,41 +18,43 @@ import {
 
 const ENDPOINT = "http://localhost:3000/api/random";
 
-const ALLOWLISTED_KEY = process.env.ALLOWLISTED_WALLET_PRIVATE_KEY as `0x${string}`;
-const NON_ALLOWLISTED_KEY = process.env.NON_ALLOWLISTED_WALLET_PRIVATE_KEY as `0x${string}`;
-const UNFUNDED_KEY = process.env.UNFUNDED_WALLET_PRIVATE_KEY as `0x${string}`;
+const FUNDED_KEY = process.env.X402_WALLET_PRIVATE_KEY as `0x${string}`;
+const PAYER_KEY = process.env
+  .NON_ALLOWLISTED_WALLET_PRIVATE_KEY as `0x${string}`;
 
-if (!ALLOWLISTED_KEY) {
-  console.error("Missing ALLOWLISTED_WALLET_PRIVATE_KEY in .env.local");
+if (!FUNDED_KEY) {
+  console.error("Missing X402_WALLET_PRIVATE_KEY in .env.local");
   process.exit(1);
 }
-if (!NON_ALLOWLISTED_KEY) {
+if (!PAYER_KEY) {
   console.error("Missing NON_ALLOWLISTED_WALLET_PRIVATE_KEY in .env.local");
   process.exit(1);
 }
-if (!UNFUNDED_KEY) {
-  console.error("Missing UNFUNDED_WALLET_PRIVATE_KEY in .env.local");
-  process.exit(1);
-}
 
-const allowlistedAccount = privateKeyToAccount(ALLOWLISTED_KEY);
-const nonAllowlistedAccount = privateKeyToAccount(NON_ALLOWLISTED_KEY);
-const unfundedAccount = privateKeyToAccount(UNFUNDED_KEY);
-const nonAllowlistedPublicClient = createPublicClient({ chain: baseSepolia, transport: http() });
-const nonAllowlistedSigner = toClientEvmSigner(nonAllowlistedAccount, nonAllowlistedPublicClient);
-const unfundedPublicClient = createPublicClient({ chain: baseSepolia, transport: http() });
-const unfundedSigner = toClientEvmSigner(unfundedAccount, unfundedPublicClient);
+const fundedAccount = privateKeyToAccount(FUNDED_KEY);
+// Generate a fresh wallet guaranteed to have 0 ETH on Base Sepolia
+const emptyKey = generatePrivateKey();
+const emptyAccount = privateKeyToAccount(emptyKey);
+// Payer account has USDC for payment tests
+const payerAccount = privateKeyToAccount(PAYER_KEY);
+const payerPublicClient = createPublicClient({
+  chain: baseSepolia,
+  transport: http(),
+});
+const payerSigner = toClientEvmSigner(payerAccount, payerPublicClient);
 
-console.log(`Allowlisted wallet:     ${allowlistedAccount.address}`);
-console.log(`Non-allowlisted wallet: ${nonAllowlistedAccount.address}`);
-console.log(`Unfunded wallet:        ${unfundedAccount.address}\n`);
+console.log(`Funded wallet (>= 0.0001 ETH): ${fundedAccount.address}`);
+console.log(`Empty wallet (0 ETH):          ${emptyAccount.address}`);
+console.log(`Payer wallet (has USDC):       ${payerAccount.address}\n`);
 
 function decode402(header: string) {
   return JSON.parse(Buffer.from(header, "base64").toString());
 }
 
 /** Get a fresh SIWX header by fetching the 402, signing the challenge */
-async function getSIWxHeader(signingAccount = allowlistedAccount): Promise<string | null> {
+async function getSIWxHeader(
+  signingAccount = fundedAccount
+): Promise<string | null> {
   const res = await fetch(ENDPOINT);
   const header = res.headers.get("payment-required");
   if (!header) return null;
@@ -60,14 +62,18 @@ async function getSIWxHeader(signingAccount = allowlistedAccount): Promise<strin
   const siwxExt = decoded?.extensions?.["sign-in-with-x"];
   if (!siwxExt?.info || !siwxExt?.supportedChains?.length) return null;
   const chain = siwxExt.supportedChains[0];
-  const completeInfo = { ...siwxExt.info, chainId: chain.chainId, type: chain.type };
+  const completeInfo = {
+    ...siwxExt.info,
+    chainId: chain.chainId,
+    type: chain.type,
+  };
   const payload = await createSIWxPayload(completeInfo, signingAccount);
   return encodeSIWxHeader(payload);
 }
 
 // ─── Test 1: 402 response structure ───
 async function test1() {
-  console.log("═══ Test 1: 402 with payment + allowlist extensions ═══");
+  console.log("═══ Test 1: 402 with payment + token-gate extensions ═══");
   const res = await fetch(ENDPOINT);
   console.log(`Status: ${res.status}`);
 
@@ -79,12 +85,14 @@ async function test1() {
 
   const decoded = decode402(header);
   const siwx = decoded?.extensions?.["sign-in-with-x"];
-  const allowlist = decoded?.extensions?.["allowlist"];
+  const tokenGate = decoded?.extensions?.["token-gate"];
 
   console.log(`sign-in-with-x: ${siwx ? "present" : "MISSING"}`);
-  console.log(`allowlist: ${allowlist ? JSON.stringify(allowlist) : "MISSING"}`);
+  console.log(
+    `token-gate: ${tokenGate ? JSON.stringify(tokenGate) : "MISSING"}`
+  );
 
-  const pass = !!siwx && !!allowlist;
+  const pass = !!siwx && !!tokenGate && tokenGate.minBalance === "0.0001";
   console.log(pass ? "PASS\n" : "FAIL\n");
   return pass;
 }
@@ -93,7 +101,10 @@ async function test1() {
 async function test2() {
   console.log("═══ Test 2: Payment WITHOUT SIWX is blocked ═══");
 
-  const client = new x402Client().register("eip155:84532", new ExactEvmScheme(nonAllowlistedSigner));
+  const client = new x402Client().register(
+    "eip155:84532",
+    new ExactEvmScheme(payerSigner)
+  );
   const fetchWithPay = wrapFetchWithPayment(fetch, client);
 
   try {
@@ -118,9 +129,11 @@ async function test2() {
   }
 }
 
-// ─── Test 3: Allowlisted wallet SIWX → free access ───
+// ─── Test 3: SIWX with sufficient balance → free access ───
 async function test3() {
-  console.log("═══ Test 3: Allowlisted wallet SIWX → free access ═══");
+  console.log(
+    "═══ Test 3: Funded wallet SIWX → free access (no payment) ═══"
+  );
 
   const siwxHeaderValue = await getSIWxHeader();
   if (!siwxHeaderValue) {
@@ -136,9 +149,12 @@ async function test3() {
   if (res.ok) {
     const data = await res.json();
     console.log(`Response: ${JSON.stringify(data)}`);
-    const hasNumber = typeof data.number === "number" && data.number >= 1 && data.number <= 9;
+    const hasNumber =
+      typeof data.number === "number" && data.number >= 1 && data.number <= 9;
     console.log(`Valid number (1-9): ${hasNumber}`);
-    console.log(hasNumber ? "PASS: VIP free access granted\n" : "FAIL: Invalid response\n");
+    console.log(
+      hasNumber ? "PASS: Free access granted\n" : "FAIL: Invalid response\n"
+    );
     return hasNumber;
   }
 
@@ -146,12 +162,14 @@ async function test3() {
   return false;
 }
 
-// ─── Test 4: Non-allowlisted wallet SIWX → still 402 ───
+// ─── Test 4: SIWX with insufficient balance → still 402 ───
 async function test4() {
-  console.log("═══ Test 4: Non-allowlisted wallet SIWX → still 402 ═══");
-  console.log(`Using non-allowlisted wallet: ${nonAllowlistedAccount.address}`);
+  console.log(
+    "═══ Test 4: Empty wallet SIWX → still 402 (needs payment) ═══"
+  );
+  console.log(`Using empty wallet: ${emptyAccount.address}`);
 
-  const siwxHeaderValue = await getSIWxHeader(nonAllowlistedAccount);
+  const siwxHeaderValue = await getSIWxHeader(emptyAccount);
   if (!siwxHeaderValue) {
     console.log("FAIL: Could not get SIWX challenge\n");
     return false;
@@ -163,19 +181,19 @@ async function test4() {
   console.log(`Status: ${res.status}`);
 
   if (res.status === 402) {
-    console.log("PASS: Non-VIP wallet needs payment\n");
+    console.log("PASS: Empty wallet needs payment\n");
     return true;
   }
   console.log(`FAIL: Expected 402, got ${res.status}\n`);
   return false;
 }
 
-// ─── Test 5: Non-allowlisted wallet SIWX + payment → 200 ───
+// ─── Test 5: SIWX with insufficient balance + payment → 200 ───
 async function test5() {
-  console.log("═══ Test 5: Non-allowlisted wallet SIWX + payment → 200 ═══");
-  console.log(`Using non-allowlisted wallet: ${nonAllowlistedAccount.address}`);
+  console.log("═══ Test 5: Payer wallet SIWX + payment → 200 ═══");
+  console.log(`Using payer wallet: ${payerAccount.address}`);
 
-  const siwxHeaderValue = await getSIWxHeader(nonAllowlistedAccount);
+  const siwxHeaderValue = await getSIWxHeader(payerAccount);
   if (!siwxHeaderValue) {
     console.log("FAIL: Could not get SIWX challenge\n");
     return false;
@@ -184,7 +202,7 @@ async function test5() {
   // Wrap fetch to always include SIWX header
   const fetchWithSIWx = (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = new Headers(
-      input instanceof Request ? input.headers : init?.headers,
+      input instanceof Request ? input.headers : init?.headers
     );
     if (init?.headers) {
       new Headers(init.headers).forEach((v, k) => headers.set(k, v));
@@ -193,7 +211,10 @@ async function test5() {
     return fetch(input, { ...init, headers });
   };
 
-  const client = new x402Client().register("eip155:84532", new ExactEvmScheme(nonAllowlistedSigner));
+  const client = new x402Client().register(
+    "eip155:84532",
+    new ExactEvmScheme(payerSigner)
+  );
   const fetchWithPay = wrapFetchWithPayment(fetchWithSIWx, client);
 
   try {
@@ -203,7 +224,7 @@ async function test5() {
     if (res.ok) {
       const data = await res.json();
       console.log(`Response: ${JSON.stringify(data)}`);
-      console.log("PASS: Non-VIP wallet paid and got result\n");
+      console.log("PASS: Paid and got result\n");
       return true;
     }
     const body = await res.text();
@@ -217,61 +238,15 @@ async function test5() {
   }
 }
 
-// ─── Test 6: Unfunded wallet SIWX + payment attempt → fails (no USDC) ───
-async function test6() {
-  console.log("═══ Test 6: Unfunded wallet tries to pay → fails (no USDC) ═══");
-  console.log(`Using unfunded wallet: ${unfundedAccount.address}`);
-
-  const siwxHeaderValue = await getSIWxHeader(unfundedAccount);
-  if (!siwxHeaderValue) {
-    console.log("FAIL: Could not get SIWX challenge\n");
-    return false;
-  }
-
-  // Wrap fetch to always include SIWX header
-  const fetchWithSIWx = (input: RequestInfo | URL, init?: RequestInit) => {
-    const headers = new Headers(
-      input instanceof Request ? input.headers : init?.headers,
-    );
-    if (init?.headers) {
-      new Headers(init.headers).forEach((v, k) => headers.set(k, v));
-    }
-    headers.set("SIGN-IN-WITH-X", siwxHeaderValue);
-    return fetch(input, { ...init, headers });
-  };
-
-  const client = new x402Client().register("eip155:84532", new ExactEvmScheme(unfundedSigner));
-  const fetchWithPay = wrapFetchWithPayment(fetchWithSIWx, client);
-
-  try {
-    const res = await fetchWithPay(ENDPOINT);
-    console.log(`Status: ${res.status}`);
-    const body = await res.text();
-    console.log(`Body: ${body}`);
-
-    if (!res.ok) {
-      console.log("PASS: Unfunded wallet can't pay — blocked as expected\n");
-      return true;
-    }
-    console.log("FAIL: Unfunded wallet somehow paid\n");
-    return false;
-  } catch (err) {
-    console.log(`Error (expected): ${err}`);
-    console.log("PASS: Unfunded wallet can't pay\n");
-    return true;
-  }
-}
-
 // ─── Run ───
 async function main() {
   const results: Record<string, boolean> = {};
 
-  results["Test 1: 402 + allowlist extensions"] = await test1();
+  results["Test 1: 402 + token-gate extensions"] = await test1();
   results["Test 2: Payment blocked without SIWX"] = await test2();
-  results["Test 3: VIP wallet free access"] = await test3();
-  results["Test 4: Non-VIP wallet needs payment"] = await test4();
-  results["Test 5: Non-VIP wallet can pay"] = await test5();
-  results["Test 6: Unfunded wallet can't pay"] = await test6();
+  results["Test 3: Funded wallet free access"] = await test3();
+  results["Test 4: Empty wallet needs payment"] = await test4();
+  results["Test 5: Payer wallet SIWX + payment"] = await test5();
 
   console.log("═══ SUMMARY ═══");
   for (const [name, passed] of Object.entries(results)) {

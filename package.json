@@ -1,5 +1,5 @@
 {
-  "name": "allowlist",
+  "name": "token-gating",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "npx tsx test-endpoint.ts",
-    "test:quick": "npx tsx test-allowlist.ts"
+    "test:quick": "npx tsx test-siwx-balance.ts"
   },
   "dependencies": {
     "@x402/core": "^2.6.0",

@@ -1,5 +1,5 @@
 /**
- * Quick test — checks if the test wallet gets free VIP access via allowlist.
+ * Quick test — checks if the test wallet gets free access via token balance gate.
  */
 import { config } from "dotenv";
 config({ path: ".env.local" });
@@ -11,10 +11,10 @@ import {
 } from "@x402/extensions/sign-in-with-x";
 
 const ENDPOINT = "http://localhost:3000/api/random";
-const PRIVATE_KEY = process.env.ALLOWLISTED_WALLET_PRIVATE_KEY as `0x${string}`;
+const PRIVATE_KEY = process.env.X402_WALLET_PRIVATE_KEY as `0x${string}`;
 
 if (!PRIVATE_KEY) {
-  console.error("Missing ALLOWLISTED_WALLET_PRIVATE_KEY in .env.local");
+  console.error("Missing X402_WALLET_PRIVATE_KEY in .env.local");
   process.exit(1);
 }
 
@@ -47,6 +47,11 @@ async function main() {
     return;
   }
 
+  const tokenGate = decoded?.extensions?.["token-gate"];
+  if (tokenGate) {
+    console.log(`Token gate: min ${tokenGate.minBalance} ${tokenGate.token} on ${tokenGate.network}`);
+  }
+
   // Step 2: Sign SIWX
   const chain = siwxExt.supportedChains[0];
   const completeInfo = { ...siwxExt.info, chainId: chain.chainId, type: chain.type };
@@ -62,9 +67,9 @@ async function main() {
 
   if (res.ok) {
     const data = await res.json();
-    console.log(`VIP access granted! Result: ${JSON.stringify(data)}`);
+    console.log(`Free access granted! Result: ${JSON.stringify(data)}`);
   } else {
-    console.log("Not on allowlist — payment required.");
+    console.log("Insufficient token balance — payment required.");
   }
 }
 

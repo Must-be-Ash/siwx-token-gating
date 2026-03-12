@@ -1,54 +1,57 @@
 ## What This Example Does
 
-This is a paid API endpoint that returns a random number between 1 and 9. It costs $0.02 USDC per request on Base Sepolia. But there's a twist: if your wallet address is on a VIP allowlist, you get in for free. You don't need to pay, you don't need an API key, you don't need an account. You just sign a message with your wallet to prove who you are, and the server checks if you're on the list. If you are, the door opens. If you're not, you pay like everyone else.
+This is a paid API endpoint that returns a random number between 1 and 9. It costs $0.02 USDC per request on Base Sepolia. But there's a catch: if your wallet holds at least 0.0001 ETH on Base Sepolia, you get in for free. No API key, no account, no database lookup. You sign a message to prove which wallet you control, the server checks your on-chain balance in real time, and if you're holding enough ETH, the door opens. If your balance is too low, you pay like everyone else.
 
 ## Why Build This?
 
-The allowlist pattern solves a common problem: **how do you give certain wallets free access to a paid service without building an account system?**
+The token gate pattern solves a fundamental question: **how do you give token holders free access to a paid service without building any user infrastructure?**
 
-There's no database of users, no API key management, no OAuth flow. The wallet *is* the identity. The allowlist *is* the access control. Everything else is handled by x402 and SIWX.
+There's no user table, no OAuth, no API key management. The blockchain *is* the database. Your wallet balance *is* your membership card. The server just reads on-chain state at request time — if the balance is sufficient right now, you're in.
 
 Here's where this pattern shows up in the real world:
 
-- **Beta testing** — You're launching a paid API. Before going public, you add your testers' wallet addresses to the allowlist. They use the API for free while you iterate. When beta ends, remove their addresses and everyone pays.
+- **Token holder perks** — You launch a utility token or NFT. Holders get free access to your paid APIs, analytics dashboards, or premium content. The gate is automatic — buy the token, get access. Sell it, lose access. No manual provisioning.
 
-- **Partner access** — You have a business deal where another company's agents or services get free access. Add their wallet addresses to the config. No invoicing, no API key rotation, no shared secrets. Their wallet identity is their access pass.
+- **Community-gated services** — A DAO runs a paid oracle or data service. Members who hold the governance token use it for free. Non-members pay per request. The membership check is a single `getBalance()` call — no membership database to maintain.
 
-- **Internal tooling** — Your own team needs to hit production endpoints for debugging and monitoring. Instead of maintaining a separate set of internal API keys, add your team's wallets to the allowlist. They sign in with SIWX and bypass the paywall.
+- **Freemium with on-chain identity** — You want a paid API with a free tier, but you don't want to build accounts and rate limiting. Instead, wallets holding a minimum balance get unlimited free access. Everyone else pays per call. The "free tier" is just a balance threshold.
 
 ## Architecture
 
-Here's the full request flow, showing both paths through the system — the VIP path (free access) and the payment path:
+Here's the full request flow, showing both paths through the system — the token holder path (free access) and the payment path:
 
 ```mermaid
 sequenceDiagram
     participant C as Client (Wallet)
     participant S as Server (x402 Middleware)
+    participant R as Base Sepolia RPC
     participant F as Facilitator (x402.org)
 
     Note over C,S: Every request starts the same way
 
     C->>S: GET /api/random (no headers)
-    S-->>C: 402 Payment Required<br/>PAYMENT-REQUIRED header:<br/>- payment info ($0.02 USDC)<br/>- SIWX challenge (nonce, domain)<br/>- allowlist extension info
+    S-->>C: 402 Payment Required<br/>PAYMENT-REQUIRED header:<br/>- payment info ($0.02 USDC)<br/>- SIWX challenge (nonce, domain)<br/>- token-gate extension (min 0.0001 ETH)
 
-    Note over C,S: Path A: Allowlisted wallet (VIP)
+    Note over C,R: Path A: Wallet holds enough ETH
 
     C->>C: Sign SIWX message with wallet
     C->>S: GET /api/random<br/>SIGN-IN-WITH-X: {signed message}
     S->>S: Verify SIWX signature
     S->>S: Extract wallet address
-    S->>S: Check: is address in ALLOWLIST?
-    Note over S: Yes - on the list
+    S->>R: eth_getBalance(address)
+    R-->>S: 0.17 ETH
+    Note over S: 0.17 >= 0.0001 — qualifies
     S-->>C: 200 OK { "number": 7 }<br/>Free access, no payment needed
 
-    Note over C,S: Path B: Non-allowlisted wallet (must pay)
+    Note over C,R: Path B: Wallet doesn't hold enough ETH
 
     C->>C: Sign SIWX message with wallet
     C->>S: GET /api/random<br/>SIGN-IN-WITH-X: {signed message}
     S->>S: Verify SIWX signature
     S->>S: Extract wallet address
-    S->>S: Check: is address in ALLOWLIST?
-    Note over S: No - not on the list
+    S->>R: eth_getBalance(address)
+    R-->>S: 0 ETH
+    Note over S: 0 < 0.0001 — doesn't qualify
     S-->>C: 402 Payment Required
 
     C->>C: Create payment ($0.02 USDC)
@@ -58,30 +61,58 @@ sequenceDiagram
     S-->>C: 200 OK { "number": 3 }
 ```
 
+> **Key difference from an allowlist:** the balance check hits an external system (the RPC node) on every request. This makes the gate dynamic — if a wallet acquires tokens after being denied, the very next request will grant free access. No config changes, no restarts.
+
 ## Setup
 
 ### Prerequisites
 
 - Node.js 18+
-- Three EVM wallets (you'll generate these below)
-- Base Sepolia testnet ETH + USDC for one of the wallets
+- Two EVM wallets (details below)
+- Base Sepolia testnet ETH for the main wallet (at least 0.0001 ETH)
+- Base Sepolia testnet USDC for the payer wallet (for payment tests)
 
 ### Step 1: Clone and install
 
 ```bash
-git clone <repo-url> allowlist
-cd allowlist
+git clone https://github.com/Must-be-Ash/siwx-token-gating.git
+cd siwx-token-gating
 npm install
 ```
 
-### Step 2: Generate wallets
+### Step 2: Configure environment
 
-You need three wallets, each playing a different role in the tests. You can generate them with a quick script:
+Create a `.env.local` file:
+
+```env
+# Main wallet — must hold >= 0.0001 ETH on Base Sepolia for free access
+X402_WALLET_ADDRESS=0xYourWalletAddress
+X402_WALLET_PRIVATE_KEY=0xYourPrivateKey
+
+# Payer wallet — needs ETH + USDC on Base Sepolia (for payment tests)
+NON_ALLOWLISTED_WALLET_ADDRESS=0xPayerAddress
+NON_ALLOWLISTED_WALLET_PRIVATE_KEY=0xPayerPrivateKey
+
+# Token gate config
+TOKEN_GATE_RPC_URL=https://sepolia.base.org
+TOKEN_GATE_MIN_BALANCE=0.0001
+```
+
+What each variable does:
+
+| Variable | Purpose |
+|----------|---------|
+| `X402_WALLET_*` | The wallet that will sign in via SIWX. Must hold >= 0.0001 ETH on Base Sepolia to trigger the free access path. |
+| `NON_ALLOWLISTED_WALLET_*` | A second wallet used in tests to demonstrate the payment path. Needs USDC to pay $0.02 per request. |
+| `TOKEN_GATE_RPC_URL` | The RPC endpoint used to query on-chain balances. Defaults to the public Base Sepolia RPC. |
+| `TOKEN_GATE_MIN_BALANCE` | The minimum ETH balance (in ether) required for free access. Defaults to `0.0001`. |
+
+You can generate wallets with viem:
 
 ```bash
 node -e "
 const { generatePrivateKey, privateKeyToAccount } = require('viem/accounts');
-for (const name of ['ALLOWLISTED', 'NON_ALLOWLISTED', 'UNFUNDED']) {
+for (const name of ['X402', 'NON_ALLOWLISTED']) {
   const key = generatePrivateKey();
   const acc = privateKeyToAccount(key);
   console.log(name + '_WALLET_ADDRESS=' + acc.address);
@@ -91,41 +122,24 @@ for (const name of ['ALLOWLISTED', 'NON_ALLOWLISTED', 'UNFUNDED']) {
 "
 ```
 
-### Step 3: Configure environment
+### Step 3: Fund the wallets
+
+- **Main wallet** — needs >= 0.0001 ETH on Base Sepolia. Use a [Base Sepolia faucet](https://www.coinbase.com/faucets/base-ethereum-goerli-faucet) to get testnet ETH.
+- **Payer wallet** — needs ETH (for gas) + USDC (for payment). Get USDC from the [Circle faucet](https://faucet.circle.com/) (select Base Sepolia).
+
+> **The main wallet does NOT need USDC.** It gets free access via the token gate — it never pays. Only the payer wallet needs USDC for testing the payment path.
+
+### Step 4: Verify your wallet balance
+
+Before starting, confirm the main wallet has enough ETH:
 
 ```bash
-cp .env.example .env.local
+curl -s -X POST https://sepolia.base.org \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xYOUR_WALLET_ADDRESS","latest"],"id":1}'
 ```
 
-Open `.env.local` and fill in the wallet values from step 2. Then set `ALLOWLIST_ADDRESSES` to the allowlisted wallet's address:
-
-```env
-# This wallet is on the VIP list (free access, no funds needed)
-ALLOWLISTED_WALLET_ADDRESS=0xYourAllowlistedAddress
-ALLOWLISTED_WALLET_PRIVATE_KEY=0xYourAllowlistedKey
-
-# This wallet must pay (needs testnet funds)
-NON_ALLOWLISTED_WALLET_ADDRESS=0xYourFundedAddress
-NON_ALLOWLISTED_WALLET_PRIVATE_KEY=0xYourFundedKey
-
-# This wallet can't pay (no funds, not on the list)
-UNFUNDED_WALLET_ADDRESS=0xYourUnfundedAddress
-UNFUNDED_WALLET_PRIVATE_KEY=0xYourUnfundedKey
-
-# The VIP list — add the allowlisted wallet here
-ALLOWLIST_ADDRESSES=0xYourAllowlistedAddress
-```
-
-> **Important:** Only the `NON_ALLOWLISTED` wallet needs testnet funds. The allowlisted wallet gets free access (no funds needed), and the unfunded wallet is specifically meant to demonstrate what happens when you can't pay.
-
-### Step 4: Fund the non-allowlisted wallet
-
-Get Base Sepolia testnet tokens:
-
-- **ETH** — use a Base Sepolia faucet
-- **USDC** — use the [Circle USDC faucet](https://faucet.circle.com/) (select Base Sepolia)
-
-You only need a small amount. Each request costs $0.02 USDC.
+You'll get a hex response like `{"result":"0x25d61c63290cbd5"}`. Convert it — any value above `0x5af3107a4000` (100000000000000 wei = 0.0001 ETH) means you're set.
 
 ### Step 5: Start the server
 
@@ -146,7 +160,7 @@ HTTP/1.1 402 Payment Required
 payment-required: eyJ4NDAyVmVyc2lvbi...
 ```
 
-That `payment-required` header is a base64-encoded JSON object containing everything a client needs: payment details, the SIWX challenge, and the allowlist extension info. We'll decode it in a later section.
+That `payment-required` header is a base64-encoded JSON object containing everything a client needs: payment details, the SIWX challenge, and the token-gate extension info. We'll decode it in a later section.
 
 ### Step 7: Run the test suite
 
@@ -154,16 +168,23 @@ That `payment-required` header is a base64-encoded JSON object containing everyt
 npm test
 ```
 
-This runs 6 tests that cover every path through the system:
+This runs 5 tests covering every path through the system:
 
 ```
-Test 1: 402 + allowlist extensions          → PASS
+Test 1: 402 + token-gate extensions        → PASS
 Test 2: Payment blocked without SIWX       → PASS
-Test 3: VIP wallet free access             → PASS
-Test 4: Non-VIP wallet needs payment       → PASS
-Test 5: Non-VIP wallet can pay             → PASS
-Test 6: Unfunded wallet can't pay          → PASS
+Test 3: Funded wallet free access           → PASS
+Test 4: Empty wallet needs payment          → PASS
+Test 5: Payer wallet SIWX + payment         → PASS
 ```
+
+Or run the quick single test:
+
+```bash
+npm run test:quick
+```
+
+This signs in with your main wallet and reports whether free access was granted.
 
 ## The Middleware — Line by Line
 
@@ -202,11 +223,16 @@ const routes = {
     mimeType: "application/json",
     extensions: {
       ...declareSIWxExtension({
-        statement: "Sign in to check VIP access for random number generator",
+        statement:
+          "Sign in to verify token balance for free access to random number generator",
         expirationSeconds: 300,
       }),
-      allowlist: {
-        description: "VIP wallets get free access — sign in with SIWX to check",
+      "token-gate": {
+        description: "Hold >= 0.0001 ETH on Base Sepolia for free access",
+        network: "eip155:84532",
+        token: "ETH",
+        minBalance: "0.0001",
+        unit: "ether",
       },
     },
   },
@@ -217,31 +243,41 @@ This defines what the server advertises in the 402 response:
 
 - **Price:** $0.02 USDC on Base Sepolia
 - **SIWX extension:** Tells clients "you can sign in with your wallet." The `statement` is the human-readable message the wallet will display when signing. The `expirationSeconds` means the signed message is valid for 5 minutes.
-- **Allowlist extension:** Custom metadata telling clients "there's a VIP list — sign in to check if you're on it." This is purely informational — it helps clients understand *why* SIWX is being requested.
+- **Token-gate extension:** Custom metadata telling clients "there's a balance threshold — sign in and the server will check your on-chain ETH." This includes the exact threshold (`minBalance`), the token being checked (`ETH`), and the network (`eip155:84532`). This is informational — it helps client apps display the right UI before the user even signs in.
 
-### The allowlist — the entire data layer
+### The balance checker — the on-chain data layer
 
 ```typescript
-const ALLOWLIST: Set<string> = new Set(
-  (process.env.ALLOWLIST_ADDRESSES || "")
-    .split(",")
-    .map((addr) => addr.trim().toLowerCase())
-    .filter(Boolean)
-);
+const publicClient = createPublicClient({
+  chain: baseSepolia,
+  transport: http(process.env.TOKEN_GATE_RPC_URL || "https://sepolia.base.org"),
+});
 
-function isAllowlisted(address: string): boolean {
-  return ALLOWLIST.has(address.toLowerCase());
+const MIN_BALANCE = parseEther(process.env.TOKEN_GATE_MIN_BALANCE || "0.0001");
+
+async function checkTokenBalance(
+  address: string
+): Promise<{ hasEnough: boolean; balance: string }> {
+  const balance = await publicClient.getBalance({
+    address: address as `0x${string}`,
+  });
+  return {
+    hasEnough: balance >= MIN_BALANCE,
+    balance: formatEther(balance),
+  };
 }
 ```
 
-That's it. The "database" is a comma-separated env var parsed into a `Set` at startup. The lookup is a case-insensitive `Set.has()` call. No database driver, no connection pool, no ORM. This is what makes this example the simplest SIWX gate — the check itself is trivial, so you can focus on learning the SIWX pattern without any distractions.
+This is the "database" — except it's a live blockchain query. Every time the gate runs, it calls `eth_getBalance` against the Base Sepolia RPC. No caching, no stale data, no sync lag. The balance is whatever the chain says *right now*.
+
+`parseEther("0.0001")` converts the human-readable threshold to wei (100000000000000), so the comparison is a simple bigint `>=`. `formatEther` converts back for logging.
 
 ### The gate hook — where the magic happens
 
 This is the core logic. It runs on every protected request, *before* x402 checks payment:
 
 ```typescript
-function createAllowlistGateHook() {
+function createTokenGateHook() {
   return async (context) => {
     const siwxHeader = context.adapter.getHeader("sign-in-with-x");
     const hasPayment = !!context.adapter.getHeader("payment-signature");
@@ -270,9 +306,9 @@ The client hasn't done anything yet. Return `undefined` to let x402 send the 402
     }
 ```
 
-The client is trying to pay without signing in. This gate requires SIWX on every request (even paid ones), so this is rejected with a 403.
+The client is trying to pay without signing in. This gate requires SIWX on every request (even paid ones), so this is rejected with a 403. Why? Because the server needs to know *who* is paying — identity first, then payment.
 
-**SIWX present — validate and check the list:**
+**SIWX present — validate and check the balance:**
 
 ```typescript
     const payload = parseSIWxHeader(siwxHeader!);
@@ -293,19 +329,24 @@ The client is trying to pay without signing in. This gate requires SIWX on every
 
 Three steps: parse the SIWX header, validate the message (checks nonce, expiration, domain, URI), and verify the cryptographic signature. After this, you have the wallet address — verified, not self-reported.
 
-**The allowlist check:**
+**The token balance check:**
 
 ```typescript
-    if (isAllowlisted(address)) {
+    const { hasEnough, balance } = await checkTokenBalance(address);
+
+    if (hasEnough) {
       return { grantAccess: true as const };
     }
 
-    return; // not on the list → fall through to payment
+    return; // not enough → fall through to payment
 ```
 
-This is the entire gate decision. If the wallet is on the list, return `{ grantAccess: true }` — this tells x402 to skip payment and serve the endpoint directly. If not, return `undefined` to fall through to standard x402 payment verification.
+This is the entire gate decision. The server calls `eth_getBalance` on the verified wallet address, compares against the threshold, and makes a binary choice:
 
-> **The `grantAccess: true` return is the free access bypass.** It short-circuits the entire payment flow. The request goes straight to your route handler (`app/api/random/route.ts`) as if there was no paywall at all.
+- **Enough ETH?** Return `{ grantAccess: true }` — this tells x402 to skip payment entirely and serve the endpoint directly.
+- **Not enough?** Return `undefined` — fall through to standard x402 payment verification.
+
+> **The `grantAccess: true` return is the free access bypass.** It short-circuits the entire payment flow. The request goes straight to your route handler (`app/api/random/route.ts`) as if there was no paywall at all. The wallet never needs USDC, the facilitator is never contacted, no on-chain payment happens.
 
 ## Understanding SIWX
 
@@ -313,7 +354,7 @@ This is the entire gate decision. If the wallet is on the list, return `{ grantA
 
 SIWX (Sign-In with X) is a wallet authentication standard based on [CAIP-122](https://chainagnostic.org/CAIPs/caip-122). It lets a server verify that a client controls a specific wallet address — without requiring accounts, passwords, or API keys.
 
-Think of it like showing your ID at the door. You're not paying to get in (that's what `PAYMENT-SIGNATURE` is for). You're proving who you are. The bouncer (the server) checks your ID (the SIWX signature) against the guest list (the allowlist). If you're on it, you walk in free. If not, you pay cover.
+Think of it like showing your membership card at a club. You're not paying to get in (that's what `PAYMENT-SIGNATURE` is for). You're proving who you are. The bouncer (the server) checks your card (the SIWX signature), then looks up whether your membership tier qualifies for free entry (the balance check). If your balance is high enough, you walk in free. If not, you pay cover.
 
 ### Two headers, two purposes
 
@@ -321,10 +362,10 @@ x402 with SIWX uses two separate headers, and they do completely different thing
 
 | Header | Purpose | Analogy |
 |--------|---------|---------|
-| `SIGN-IN-WITH-X` | Proves wallet identity | Showing your ID |
+| `SIGN-IN-WITH-X` | Proves wallet identity | Showing your membership card |
 | `PAYMENT-SIGNATURE` | Authorizes a payment | Handing over cash |
 
-These can even come from different wallets. You might sign in with a cold wallet (to prove identity) and pay from a hot wallet (that holds your USDC). In this example, both come from the same wallet, but the separation matters architecturally.
+These can even come from different wallets. You might sign in with a cold wallet (to prove you hold a large ETH balance) and pay from a hot wallet (that holds your USDC). In this example, when the balance check fails, the same wallet that signed in is the one that pays — but the separation matters architecturally.
 
 ### The challenge-response flow
 
@@ -340,7 +381,7 @@ The wallet signs a structured message containing the nonce, domain, URI, and sta
 
 **3. Server verifies the signature:**
 
-The server recovers the wallet address from the signature, checks the nonce hasn't been reused, verifies the domain and URI match, and confirms the message hasn't expired. Now the server knows — cryptographically — which wallet is making the request.
+The server recovers the wallet address from the signature, checks the nonce hasn't been reused, verifies the domain and URI match, and confirms the message hasn't expired. Now the server knows — cryptographically — which wallet is making the request. It can then query that wallet's on-chain balance.
 
 ### The SIWX payload structure
 
@@ -350,21 +391,21 @@ Here's what's inside the `SIGN-IN-WITH-X` header after the client signs (decoded
 {
   "domain": "localhost",
   "address": "0xAbF01df9428EaD5418473A7c91244826A3Af23b3",
-  "statement": "Sign in to check VIP access for random number generator",
+  "statement": "Sign in to verify token balance for free access to random number generator",
   "uri": "http://localhost:3000/api/random",
   "version": "1",
   "chainId": "eip155:84532",
   "type": "eip191",
-  "nonce": "7507cb22206f60c0b453b971a9a357b6",
-  "issuedAt": "2026-03-12T18:23:47.752Z",
-  "expirationTime": "2026-03-12T18:28:47.752Z",
+  "nonce": "41535e216c52012cc8e4369ce52931da",
+  "issuedAt": "2026-03-12T20:17:05.465Z",
+  "expirationTime": "2026-03-12T20:22:05.466Z",
   "resources": ["http://localhost:3000/api/random"],
   "signature": "0x..."
 }
 ```
 
 - **domain** — the server's domain (prevents replay attacks on other servers)
-- **address** — the wallet claiming to sign
+- **address** — the wallet claiming to sign (the server verifies this matches the signature)
 - **statement** — what the user agreed to when signing
 - **nonce** — one-time value from the server's challenge (prevents replay)
 - **expirationTime** — 5 minutes from `issuedAt` (set by `expirationSeconds: 300`)
@@ -389,7 +430,7 @@ When you `curl http://localhost:3000/api/random`, the server returns a 402 with 
       "network": "eip155:84532",
       "amount": "20000",
       "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-      "payTo": "0xC55bBDD975256f88cD34Fe77F95A24660e5543AE",
+      "payTo": "0xF7C645b7600Fb6AaE07Fd0Cf31112A7788BE8F85",
       "maxTimeoutSeconds": 300,
       "extra": {
         "name": "USDC",
@@ -403,11 +444,13 @@ When you `curl http://localhost:3000/api/random`, the server returns a 402 with 
         "domain": "localhost",
         "uri": "http://localhost:3000/api/random",
         "version": "1",
-        "nonce": "7507cb22206f60c0b453b971a9a357b6",
-        "issuedAt": "2026-03-12T18:23:47.752Z",
-        "expirationTime": "2026-03-12T18:28:47.752Z",
-        "statement": "Sign in to check VIP access for random number generator",
-        "resources": ["http://localhost:3000/api/random"]
+        "nonce": "41535e216c52012cc8e4369ce52931da",
+        "issuedAt": "2026-03-12T20:17:05.465Z",
+        "resources": [
+          "http://localhost:3000/api/random"
+        ],
+        "expirationTime": "2026-03-12T20:22:05.466Z",
+        "statement": "Sign in to verify token balance for free access to random number generator"
       },
       "supportedChains": [
         {
@@ -416,8 +459,12 @@ When you `curl http://localhost:3000/api/random`, the server returns a 402 with 
         }
       ]
     },
-    "allowlist": {
-      "description": "VIP wallets get free access — sign in with SIWX to check"
+    "token-gate": {
+      "description": "Hold >= 0.0001 ETH on Base Sepolia for free access",
+      "network": "eip155:84532",
+      "token": "ETH",
+      "minBalance": "0.0001",
+      "unit": "ether"
     }
   }
 }
@@ -436,10 +483,17 @@ Let's break this down:
 ### SIWX challenge (`extensions.sign-in-with-x`)
 
 - **info** — the challenge data the client must sign. The `nonce` is unique per request (prevents replay), and the `expirationTime` gives the client 5 minutes to respond.
-- **supportedChains** — which chains and signing methods the server accepts. `eip191` is standard Ethereum personal_sign.
+- **supportedChains** — which chains and signing methods the server accepts. `eip191` is standard Ethereum `personal_sign`.
+- **statement** — the human-readable text shown to the user when signing: *"Sign in to verify token balance for free access to random number generator"*
 
-### Allowlist extension (`extensions.allowlist`)
+### Token-gate extension (`extensions.token-gate`)
 
-- **description** — human-readable text telling the client why SIWX is being requested. This is custom metadata — it doesn't affect protocol behavior, but it tells client apps (or users reading the raw response) that there's a VIP path available.
+- **description** — human-readable explanation of the gate
+- **network** — the chain where the balance is checked (Base Sepolia)
+- **token** — which token is checked (native ETH)
+- **minBalance** — the threshold for free access (0.0001 ETH)
+- **unit** — the denomination ("ether", not "wei")
 
-> **The 402 response is the server saying: "Here's the price. But if you're a VIP, sign in and prove it — you might get in free."** The client gets to choose: sign in to check the list, or just pay and skip the identity step.
+This extension is custom metadata — it doesn't affect the x402 protocol itself. But it tells client apps exactly what's needed for free access. A smart client could read this, check its own balance locally, and decide whether to sign in (if it has enough ETH) or skip straight to payment (if it doesn't).
+
+> **The 402 response is the server saying: "Here's the price. But if you hold enough ETH, sign in and prove it — you'll get in free."** The client gets all the information upfront to decide which path to take.

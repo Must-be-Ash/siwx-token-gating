@@ -170,15 +170,15 @@ export default function Home() {
             className="font-jersey text-6xl md:text-8xl tracking-tight"
             style={{ color: "#fafafa" }}
           >
-            SIWX Allowlist
+            SIWX Token Gate
           </h1>
           <p
             className="text-lg md:text-xl leading-relaxed max-w-lg"
             style={{ color: "#a0a0a0" }}
           >
-            VIP free access gate for x402 endpoints.
+            Token-gated free access for x402 endpoints.
             <br />
-            Allowlisted wallets sign in and skip payment.
+            Hold enough ETH and skip payment entirely.
           </p>
 
         </div>
@@ -194,19 +194,19 @@ export default function Home() {
             <span style={{ color: "#b0b0b0" }}>GET /api/random</span>
             <span style={{ color: "#777777" }}>{" → "}</span>
             <span style={{ color: "#c4b5fd" }}>402</span>
-            <span style={{ color: "#777777" }}>{" + SIWX challenge"}</span>
+            <span style={{ color: "#777777" }}>{" + SIWX challenge + token-gate info"}</span>
             <br /><br />
             <span style={{ color: "#b0b0b0" }}>GET /api/random</span>
             <span style={{ color: "#777777" }}>{" + "}</span>
             <span style={{ color: "#fafafa" }}>SIGN-IN-WITH-X</span>
             <br />
             <span style={{ color: "#777777" }}>{"  ├─ "}</span>
-            <span style={{ color: "#4ade80" }}>on the list</span>
+            <span style={{ color: "#4ade80" }}>{"≥ 0.0001 ETH"}</span>
             <span style={{ color: "#777777" }}>{" → "}</span>
             <span style={{ color: "#4ade80" }}>200 free access</span>
             <br />
             <span style={{ color: "#777777" }}>{"  └─ "}</span>
-            <span style={{ color: "#fbbf24" }}>not on the list</span>
+            <span style={{ color: "#fbbf24" }}>{"< 0.0001 ETH"}</span>
             <span style={{ color: "#777777" }}>{" → "}</span>
             <span style={{ color: "#c4b5fd" }}>402 pay $0.02</span>
             <br /><br />
@@ -231,7 +231,7 @@ export default function Home() {
         <div className="flex flex-col items-center gap-10">
           <div className="flex items-center justify-center gap-4 flex-wrap">
             <ShimmerButton
-              href="https://github.com/Must-be-Ash/siwx-allowlist"
+              href="https://github.com/Must-be-Ash/siwx-token-gating"
               icon={
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
@@ -247,7 +247,7 @@ export default function Home() {
               GitHub
             </ShimmerButton>
             <ShimmerButton
-              href="https://github.com/Must-be-Ash/siwx-allowlist/blob/main/GUIDE.md"
+              href="https://github.com/Must-be-Ash/siwx-token-gating/blob/main/GUIDE.md"
               icon={
                 <svg
                   xmlns="http://www.w3.org/2000/svg"

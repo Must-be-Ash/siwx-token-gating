@@ -12,20 +12,32 @@ import {
   validateSIWxMessage,
   verifySIWxSignature,
 } from "@x402/extensions/sign-in-with-x";
-const payTo = "0xC55bBDD975256f88cD34Fe77F95A24660e5543AE";
+import { createPublicClient, http, parseEther, formatEther } from "viem";
+import { baseSepolia } from "viem/chains";
 
-// Parse allowlist from env — done once at module load
-const ALLOWLIST: Set<string> = new Set(
-  (process.env.ALLOWLIST_ADDRESSES || "")
-    .split(",")
-    .map((addr) => addr.trim().toLowerCase())
-    .filter(Boolean)
-);
+const payTo = "0xF7C645b7600Fb6AaE07Fd0Cf31112A7788BE8F85";
 
-function isAllowlisted(address: string): boolean {
-  return ALLOWLIST.has(address.toLowerCase());
+// Token balance checker via public RPC
+const publicClient = createPublicClient({
+  chain: baseSepolia,
+  transport: http(process.env.TOKEN_GATE_RPC_URL || "https://sepolia.base.org"),
+});
+
+const MIN_BALANCE = parseEther(process.env.TOKEN_GATE_MIN_BALANCE || "0.0001");
+
+async function checkTokenBalance(
+  address: string
+): Promise<{ hasEnough: boolean; balance: string }> {
+  const balance = await publicClient.getBalance({
+    address: address as `0x${string}`,
+  });
+  return {
+    hasEnough: balance >= MIN_BALANCE,
+    balance: formatEther(balance),
+  };
 }
 
+// x402 resource server setup
 const facilitatorClient = new HTTPFacilitatorClient({
   url: "https://x402.org/facilitator",
 });
@@ -48,27 +60,32 @@ const routes = {
     mimeType: "application/json",
     extensions: {
       ...declareSIWxExtension({
-        statement: "Sign in to check VIP access for random number generator",
+        statement:
+          "Sign in to verify token balance for free access to random number generator",
         expirationSeconds: 300,
       }),
-      allowlist: {
-        description: "VIP wallets get free access — sign in with SIWX to check",
+      "token-gate": {
+        description: "Hold >= 0.0001 ETH on Base Sepolia for free access",
+        network: "eip155:84532",
+        token: "ETH",
+        minBalance: "0.0001",
+        unit: "ether",
       },
     },
   },
 };
 
 /**
- * Allowlist gate hook — VIP wallets get free access, others pay.
+ * Token gate hook — wallets with sufficient ETH balance get free access, others pay.
  *
  * Flow:
  * - No SIWX, no payment      → fall through → 402 with extensions
  * - Payment without SIWX     → ABORT 403
- * - SIWX valid + allowlisted → ABORT 200 (free access bypass)
- * - SIWX valid + NOT listed  → fall through to payment
+ * - SIWX valid + enough ETH  → GRANT ACCESS (free, bypass payment)
+ * - SIWX valid + low ETH     → fall through to payment
  * - SIWX invalid             → ABORT
  */
-function createAllowlistGateHook() {
+function createTokenGateHook() {
   return async (context: {
     adapter: { getHeader(name: string): string | undefined; getUrl(): string };
     path: string;
@@ -112,25 +129,29 @@ function createAllowlistGateHook() {
 
       const address = verification.address!;
 
-      // Check allowlist
-      if (isAllowlisted(address)) {
+      // Check on-chain token balance
+      const { hasEnough, balance } = await checkTokenBalance(address);
+
+      if (hasEnough) {
         // Free access bypass — skip payment, serve the endpoint directly
         return { grantAccess: true as const };
       }
 
-      // Not allowlisted → fall through to payment verification
+      // Insufficient balance → fall through to payment verification
       return;
     } catch (err) {
       return {
         abort: true as const,
-        reason: `Allowlist gate error: ${err instanceof Error ? err.message : String(err)}`,
+        reason: `Token gate error: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
   };
 }
 
-const httpServer = new x402HTTPResourceServer(resourceServer, routes)
-  .onProtectedRequest(createAllowlistGateHook());
+const httpServer = new x402HTTPResourceServer(
+  resourceServer,
+  routes
+).onProtectedRequest(createTokenGateHook());
 
 export const middleware = paymentProxyFromHTTPServer(httpServer);
 
