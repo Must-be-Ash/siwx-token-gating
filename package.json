@@ -11,6 +11,7 @@
     "test:quick": "npx tsx test-siwx-balance.ts"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "@x402/core": "^2.6.0",
     "@x402/evm": "^2.6.0",
     "@x402/extensions": "^2.6.0",

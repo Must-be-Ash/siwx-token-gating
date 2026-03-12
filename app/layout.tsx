@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist_Mono } from "next/font/google";
+import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 const geistMono = Geist_Mono({
@@ -8,20 +9,40 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SIWX Allowlist | x402 VIP Free Access Example",
+  title: "SIWX Token Gate | x402 Token-Gated Free Access",
   description:
-    "A payment-gated API using x402 and SIWX where allowlisted wallets get free access. The simplest SIWX gate pattern.",
+    "A payment-gated API using x402 and SIWX where token holders get free access. Hold enough ETH and skip payment entirely.",
+  metadataBase: new URL("https://siwx-token-gating.vercel.app"),
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
+      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
+  manifest: "/site.webmanifest",
   openGraph: {
-    title: "SIWX Allowlist | x402 VIP Free Access Example",
+    title: "SIWX Token Gate | x402 Token-Gated Free Access",
     description:
-      "A payment-gated API using x402 and SIWX where allowlisted wallets get free access.",
+      "A payment-gated API using x402 and SIWX where token holders get free access. Hold enough ETH and skip payment entirely.",
     type: "website",
+    url: "https://siwx-token-gating.vercel.app",
+    images: [
+      {
+        url: "https://siwx-token-gating.vercel.app/og.png",
+        width: 1200,
+        height: 630,
+        alt: "SIWX Token Gate",
+      },
+    ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "SIWX Allowlist | x402 VIP Free Access Example",
+    title: "SIWX Token Gate | x402 Token-Gated Free Access",
     description:
-      "A payment-gated API using x402 and SIWX where allowlisted wallets get free access.",
+      "A payment-gated API using x402 and SIWX where token holders get free access. Hold enough ETH and skip payment entirely.",
+    images: ["https://siwx-token-gating.vercel.app/og.png"],
   },
 };
 
@@ -46,6 +67,7 @@ export default function RootLayout({
       </head>
       <body className={geistMono.variable}>
         {children}
+        <Analytics />
       </body>
     </html>
   );
