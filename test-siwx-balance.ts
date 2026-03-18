@@ -1,31 +1,35 @@
 /**
- * Quick test — checks if the test wallet gets free access via token balance gate.
+ * Quick test — checks if the Solana wallet gets free access via ZAUTH token balance gate.
  */
 import { config } from "dotenv";
 config({ path: ".env.local" });
 
-import { privateKeyToAccount } from "viem/accounts";
 import {
   encodeSIWxHeader,
   createSIWxPayload,
+  type SolanaSigner,
 } from "@x402/extensions/sign-in-with-x";
+import { createKeyPairSignerFromBytes } from "@solana/kit";
+import { base58 } from "@scure/base";
 
 const ENDPOINT = "http://localhost:3000/api/random";
-const PRIVATE_KEY = process.env.X402_WALLET_PRIVATE_KEY as `0x${string}`;
+const SVM_KEY = process.env.SVM_PRIVATE_KEY;
 
-if (!PRIVATE_KEY) {
-  console.error("Missing X402_WALLET_PRIVATE_KEY in .env.local");
+if (!SVM_KEY) {
+  console.error("Missing SVM_PRIVATE_KEY in .env.local");
   process.exit(1);
 }
-
-const account = privateKeyToAccount(PRIVATE_KEY);
 
 function decode402(header: string) {
   return JSON.parse(Buffer.from(header, "base64").toString());
 }
 
 async function main() {
-  console.log(`Wallet: ${account.address}`);
+  const signer = await createKeyPairSignerFromBytes(
+    base58.decode(SVM_KEY!)
+  ) as unknown as SolanaSigner;
+
+  console.log(`Wallet: ${(signer as any).address}`);
 
   // Step 1: Get 402 + SIWX challenge
   const res402 = await fetch(ENDPOINT);
@@ -49,13 +53,13 @@ async function main() {
 
   const tokenGate = decoded?.extensions?.["token-gate"];
   if (tokenGate) {
-    console.log(`Token gate: min ${tokenGate.minBalance} ${tokenGate.token} on ${tokenGate.network}`);
+    console.log(`Token gate: min ${tokenGate.minBalance} ${tokenGate.ticker} on ${tokenGate.network}`);
   }
 
-  // Step 2: Sign SIWX
+  // Step 2: Sign SIWX with Solana wallet
   const chain = siwxExt.supportedChains[0];
   const completeInfo = { ...siwxExt.info, chainId: chain.chainId, type: chain.type };
-  const payload = await createSIWxPayload(completeInfo, account);
+  const payload = await createSIWxPayload(completeInfo, signer);
   const siwxHeader = encodeSIWxHeader(payload);
 
   // Step 3: Send SIWX-only request

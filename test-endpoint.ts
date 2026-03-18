@@ -1,12 +1,12 @@
 /**
- * Test script for the x402-protected endpoint with token balance gate.
- * Wallets with >= 0.0001 ETH on Base Sepolia get free access. Others must pay.
+ * Test script for the x402-protected endpoint with Solana SPL token gate.
+ * Wallets with >= 402 ZAUTH on Solana mainnet get free access. Others must pay.
  */
 import { config } from "dotenv";
 config({ path: ".env.local" });
 
 import { createPublicClient, http } from "viem";
-import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
+import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
@@ -14,16 +14,19 @@ import { toClientEvmSigner } from "@x402/evm";
 import {
   encodeSIWxHeader,
   createSIWxPayload,
+  type SolanaSigner,
 } from "@x402/extensions/sign-in-with-x";
+import { createKeyPairSignerFromBytes, generateKeyPairSigner } from "@solana/kit";
+import { base58 } from "@scure/base";
 
 const ENDPOINT = "http://localhost:3000/api/random";
 
-const FUNDED_KEY = process.env.X402_WALLET_PRIVATE_KEY as `0x${string}`;
+const SVM_KEY = process.env.SVM_PRIVATE_KEY;
 const PAYER_KEY = process.env
   .NON_ALLOWLISTED_WALLET_PRIVATE_KEY as `0x${string}`;
 
-if (!FUNDED_KEY) {
-  console.error("Missing X402_WALLET_PRIVATE_KEY in .env.local");
+if (!SVM_KEY) {
+  console.error("Missing SVM_PRIVATE_KEY in .env.local");
   process.exit(1);
 }
 if (!PAYER_KEY) {
@@ -31,11 +34,7 @@ if (!PAYER_KEY) {
   process.exit(1);
 }
 
-const fundedAccount = privateKeyToAccount(FUNDED_KEY);
-// Generate a fresh wallet guaranteed to have 0 ETH on Base Sepolia
-const emptyKey = generatePrivateKey();
-const emptyAccount = privateKeyToAccount(emptyKey);
-// Payer account has USDC for payment tests
+// EVM payer account (for USDC payment fallback)
 const payerAccount = privateKeyToAccount(PAYER_KEY);
 const payerPublicClient = createPublicClient({
   chain: baseSepolia,
@@ -43,9 +42,9 @@ const payerPublicClient = createPublicClient({
 });
 const payerSigner = toClientEvmSigner(payerAccount, payerPublicClient);
 
-console.log(`Funded wallet (>= 0.0001 ETH): ${fundedAccount.address}`);
-console.log(`Empty wallet (0 ETH):          ${emptyAccount.address}`);
-console.log(`Payer wallet (has USDC):       ${payerAccount.address}\n`);
+// Initialized in main()
+let fundedSigner: SolanaSigner;
+let emptySigner: SolanaSigner;
 
 function decode402(header: string) {
   return JSON.parse(Buffer.from(header, "base64").toString());
@@ -53,7 +52,7 @@ function decode402(header: string) {
 
 /** Get a fresh SIWX header by fetching the 402, signing the challenge */
 async function getSIWxHeader(
-  signingAccount = fundedAccount
+  signer: SolanaSigner = fundedSigner
 ): Promise<string | null> {
   const res = await fetch(ENDPOINT);
   const header = res.headers.get("payment-required");
@@ -67,7 +66,7 @@ async function getSIWxHeader(
     chainId: chain.chainId,
     type: chain.type,
   };
-  const payload = await createSIWxPayload(completeInfo, signingAccount);
+  const payload = await createSIWxPayload(completeInfo, signer);
   return encodeSIWxHeader(payload);
 }
 
@@ -92,7 +91,7 @@ async function test1() {
     `token-gate: ${tokenGate ? JSON.stringify(tokenGate) : "MISSING"}`
   );
 
-  const pass = !!siwx && !!tokenGate && tokenGate.minBalance === "0.0001";
+  const pass = !!siwx && !!tokenGate && tokenGate.minBalance === "402";
   console.log(pass ? "PASS\n" : "FAIL\n");
   return pass;
 }
@@ -129,10 +128,10 @@ async function test2() {
   }
 }
 
-// ─── Test 3: SIWX with sufficient balance → free access ───
+// ─── Test 3: SIWX with sufficient ZAUTH balance → free access ───
 async function test3() {
   console.log(
-    "═══ Test 3: Funded wallet SIWX → free access (no payment) ═══"
+    "═══ Test 3: Funded Solana wallet SIWX → free access (no payment) ═══"
   );
 
   const siwxHeaderValue = await getSIWxHeader();
@@ -165,11 +164,11 @@ async function test3() {
 // ─── Test 4: SIWX with insufficient balance → still 402 ───
 async function test4() {
   console.log(
-    "═══ Test 4: Empty wallet SIWX → still 402 (needs payment) ═══"
+    "═══ Test 4: Empty Solana wallet SIWX → still 402 (needs payment) ═══"
   );
-  console.log(`Using empty wallet: ${emptyAccount.address}`);
+  console.log(`Using empty wallet: ${(emptySigner as any).address}`);
 
-  const siwxHeaderValue = await getSIWxHeader(emptyAccount);
+  const siwxHeaderValue = await getSIWxHeader(emptySigner);
   if (!siwxHeaderValue) {
     console.log("FAIL: Could not get SIWX challenge\n");
     return false;
@@ -191,9 +190,10 @@ async function test4() {
 // ─── Test 5: SIWX with insufficient balance + payment → 200 ───
 async function test5() {
   console.log("═══ Test 5: Payer wallet SIWX + payment → 200 ═══");
-  console.log(`Using payer wallet: ${payerAccount.address}`);
+  console.log(`Using empty Solana wallet: ${(emptySigner as any).address}`);
+  console.log(`Using EVM payer wallet: ${payerAccount.address}`);
 
-  const siwxHeaderValue = await getSIWxHeader(payerAccount);
+  const siwxHeaderValue = await getSIWxHeader(emptySigner);
   if (!siwxHeaderValue) {
     console.log("FAIL: Could not get SIWX challenge\n");
     return false;
@@ -240,6 +240,16 @@ async function test5() {
 
 // ─── Run ───
 async function main() {
+  // Initialize Solana signers
+  fundedSigner = await createKeyPairSignerFromBytes(
+    base58.decode(SVM_KEY!)
+  ) as unknown as SolanaSigner;
+  emptySigner = await generateKeyPairSigner() as unknown as SolanaSigner;
+
+  console.log(`Funded Solana wallet (>= 402 ZAUTH): ${(fundedSigner as any).address}`);
+  console.log(`Empty Solana wallet (0 ZAUTH):       ${(emptySigner as any).address}`);
+  console.log(`EVM payer wallet (has USDC):          ${payerAccount.address}\n`);
+
   const results: Record<string, boolean> = {};
 
   results["Test 1: 402 + token-gate extensions"] = await test1();

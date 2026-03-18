@@ -178,7 +178,7 @@ export default function Home() {
           >
             Token-gated free access for x402 endpoints.
             <br />
-            Hold enough ETH and skip payment entirely.
+            Hold enough ZAUTH and skip payment entirely.
           </p>
 
         </div>
@@ -201,12 +201,12 @@ export default function Home() {
             <span style={{ color: "#fafafa" }}>SIGN-IN-WITH-X</span>
             <br />
             <span style={{ color: "#777777" }}>{"  ├─ "}</span>
-            <span style={{ color: "#4ade80" }}>{"≥ 0.0001 ETH"}</span>
+            <span style={{ color: "#4ade80" }}>{"≥ 402 ZAUTH tokens"}</span>
             <span style={{ color: "#777777" }}>{" → "}</span>
             <span style={{ color: "#4ade80" }}>200 free access</span>
             <br />
             <span style={{ color: "#777777" }}>{"  └─ "}</span>
-            <span style={{ color: "#fbbf24" }}>{"< 0.0001 ETH"}</span>
+            <span style={{ color: "#fbbf24" }}>{"< 402 ZAUTH tokens"}</span>
             <span style={{ color: "#777777" }}>{" → "}</span>
             <span style={{ color: "#c4b5fd" }}>402 pay $0.02</span>
             <br /><br />

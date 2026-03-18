@@ -12,29 +12,41 @@ import {
   validateSIWxMessage,
   verifySIWxSignature,
 } from "@x402/extensions/sign-in-with-x";
-import { createPublicClient, http, parseEther, formatEther } from "viem";
-import { baseSepolia } from "viem/chains";
+import { Connection, PublicKey } from "@solana/web3.js";
+import {
+  getAssociatedTokenAddressSync,
+  getAccount,
+  TokenAccountNotFoundError,
+} from "@solana/spl-token";
 
 const payTo = "0xF7C645b7600Fb6AaE07Fd0Cf31112A7788BE8F85";
 
-// Token balance checker via public RPC
-const publicClient = createPublicClient({
-  chain: baseSepolia,
-  transport: http(process.env.TOKEN_GATE_RPC_URL || "https://sepolia.base.org"),
-});
-
-const MIN_BALANCE = parseEther(process.env.TOKEN_GATE_MIN_BALANCE || "0.0001");
+// Solana SPL token balance checker
+const connection = new Connection(
+  process.env.TOKEN_GATE_SOLANA_RPC || "https://api.mainnet-beta.solana.com"
+);
+const TOKEN_MINT = new PublicKey(process.env.TOKEN_GATE_MINT!);
+const MIN_BALANCE = parseInt(process.env.TOKEN_GATE_MIN_BALANCE || "402", 10);
 
 async function checkTokenBalance(
   address: string
-): Promise<{ hasEnough: boolean; balance: string }> {
-  const balance = await publicClient.getBalance({
-    address: address as `0x${string}`,
-  });
-  return {
-    hasEnough: balance >= MIN_BALANCE,
-    balance: formatEther(balance),
-  };
+): Promise<{ hasEnough: boolean; balance: number }> {
+  try {
+    const owner = new PublicKey(address);
+    const ata = getAssociatedTokenAddressSync(TOKEN_MINT, owner);
+    const account = await getAccount(connection, ata);
+    const balance = Number(account.amount);
+
+    return {
+      hasEnough: balance >= MIN_BALANCE,
+      balance,
+    };
+  } catch (err) {
+    if (err instanceof TokenAccountNotFoundError) {
+      return { hasEnough: false, balance: 0 };
+    }
+    throw err;
+  }
 }
 
 // x402 resource server setup
@@ -63,27 +75,31 @@ const routes = {
         statement:
           "Sign in to verify token balance for free access to random number generator",
         expirationSeconds: 300,
+        network: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
       }),
       "token-gate": {
-        description: "Hold >= 0.0001 ETH on Base Sepolia for free access",
-        network: "eip155:84532",
-        token: "ETH",
-        minBalance: "0.0001",
-        unit: "ether",
+        description:
+          "Hold >= 402 ZAUTH (DNhQZ1CE9qZ2FNrVhsCXwQJ2vZG8ufZkcYakTS5Jpump) on Solana for free access",
+        network: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+        token: "DNhQZ1CE9qZ2FNrVhsCXwQJ2vZG8ufZkcYakTS5Jpump",
+        standard: "SPL",
+        name: "zauthx402",
+        ticker: "ZAUTH",
+        minBalance: "402",
       },
     },
   },
 };
 
 /**
- * Token gate hook — wallets with sufficient ETH balance get free access, others pay.
+ * Token gate hook — wallets with sufficient ZAUTH balance get free access, others pay.
  *
  * Flow:
- * - No SIWX, no payment      → fall through → 402 with extensions
- * - Payment without SIWX     → ABORT 403
- * - SIWX valid + enough ETH  → GRANT ACCESS (free, bypass payment)
- * - SIWX valid + low ETH     → fall through to payment
- * - SIWX invalid             → ABORT
+ * - No SIWX, no payment         → fall through → 402 with extensions
+ * - Payment without SIWX        → ABORT 403
+ * - SIWX valid + enough ZAUTH   → GRANT ACCESS (free, bypass payment)
+ * - SIWX valid + low ZAUTH      → fall through to payment
+ * - SIWX invalid                → ABORT
  */
 function createTokenGateHook() {
   return async (context: {
